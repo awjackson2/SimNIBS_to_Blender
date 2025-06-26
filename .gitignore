@@ -1,0 +1,19 @@
+# Data directories - ignore contents but keep structure
+data/field_data/*
+data/input_meshes/*
+data/m2m_directories/*
+
+# Output directories - ignore contents but keep structure  
+output/*
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Keep directory structure by not ignoring the directories themselves
+!data/field_data/.gitkeep
+!data/input_meshes/.gitkeep
+!data/m2m_directories/.gitkeep
+
