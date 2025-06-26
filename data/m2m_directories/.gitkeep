@@ -1,0 +1,2 @@
+# This file ensures the m2m_directories directory is tracked by git
+# while the actual m2m data is ignored 

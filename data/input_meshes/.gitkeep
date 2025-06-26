@@ -1,0 +1,2 @@
+# This file ensures the input_meshes directory is tracked by git
+# while the actual mesh files are ignored 
