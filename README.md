@@ -1,6 +1,7 @@
 # SimNIBS Cortical Region Generator & Blender Converter
 
 This repository contains Python scripts for generating cortical regions from SimNIBS mesh files using various brain atlases, and converting them to PLY format for visualization in Blender. The scripts are designed to work with mesh files produced by SimNIBS's `msh2cortex` tool.
+![Untitled drawing (3)](https://github.com/user-attachments/assets/c399e389-9c09-40ea-95ab-ac570068912d)
 
 ## Overview
 
