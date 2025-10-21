@@ -6,6 +6,7 @@ Features:
 - Loads subject cortical surface mesh (.msh from msh2cortex) and subject atlas (default DKTatlas40)
 - Exports individual region meshes as PLY
 - Exports the full GM surface as a single PLY
+- Optional: keep individual region meshes and whole GM mesh as .msh files
 - Optional: sample a NIfTI field onto mesh nodes; colorize via colormap or store scalars
 - Optional: global colormap normalization from NIfTI min/max
 - Optional: generate a Blender import script
@@ -24,6 +25,12 @@ Usage examples:
         --m2m m2m_subject \
         --output-dir out \
         --global-from-nifti subject_TI_max.nii.gz
+
+    simnibs_python cortical_regions_to_ply.py \
+        --mesh subject_central.msh \
+        --m2m m2m_subject \
+        --output-dir out \
+        --keep-meshes
 """
 
 import argparse
@@ -290,7 +297,7 @@ def export_mesh_to_ply(mesh, ply_path, field_name, use_colors, colormap, field_r
 
 def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field_name,
                    use_colors, colormap, field_range, global_from_nifti,
-                   export_regions, export_whole_gm):
+                   export_regions, export_whole_gm, keep_meshes):
     mesh = read_msh(mesh_path)
     logger.info(f"Loaded mesh: {mesh_path}")
     atlas = subject_atlas(atlas_name, str(m2m_dir))
@@ -298,6 +305,11 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
 
     regions_out_dir = Path(output_dir) / "regions"
     regions_out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create meshes directory if keeping meshes
+    if keep_meshes:
+        meshes_out_dir = Path(output_dir) / "meshes"
+        meshes_out_dir.mkdir(parents=True, exist_ok=True)
 
     if field_file:
         logger.info(f"Sampling field from NIfTI for whole mesh and regions: {field_file}")
@@ -316,6 +328,7 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
 
     if export_regions:
         success_count = 0
+        mesh_success_count = 0
         for region_name, region_mask in atlas.items():
             region_mesh = extract_region_mesh(mesh, region_mask)
             if region_mesh is None:
@@ -323,15 +336,38 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
                 continue
             if field_file and (field_name not in [nd.field_name for nd in getattr(region_mesh, 'nodedata', []) if hasattr(nd, 'field_name')]):
                 region_mesh = apply_field_from_nifti(region_mesh, field_file, field_name)
+            
+            # Export PLY
             ply_path = regions_out_dir / f"{region_name}_region.ply"
             if export_mesh_to_ply(region_mesh, str(ply_path), field_name, use_colors, colormap, effective_field_range):
                 success_count += 1
+            
+            # Export MSH if requested
+            if keep_meshes:
+                msh_path = meshes_out_dir / f"{region_name}_region.msh"
+                try:
+                    region_mesh.write(str(msh_path))
+                    mesh_success_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save mesh for region {region_name}: {e}")
+        
         logger.info(f"Converted {success_count}/{len(atlas.keys())} regions to PLY")
+        if keep_meshes:
+            logger.info(f"Saved {mesh_success_count}/{len(atlas.keys())} region meshes as MSH")
 
     if export_whole_gm:
         whole_ply = Path(output_dir) / "whole_gm.ply"
         export_mesh_to_ply(mesh, str(whole_ply), field_name, use_colors, colormap, effective_field_range)
         logger.info(f"Wrote whole GM PLY: {whole_ply}")
+    
+    # Export whole GM mesh if requested
+    if keep_meshes and export_whole_gm:
+        whole_msh = Path(output_dir) / "whole_gm.msh"
+        try:
+            mesh.write(str(whole_msh))
+            logger.info(f"Wrote whole GM MSH: {whole_msh}")
+        except Exception as e:
+            logger.warning(f"Failed to save whole GM mesh: {e}")
 
 
 def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
@@ -422,6 +458,7 @@ def parse_args():
     parser.add_argument("--global-from-nifti", help="Use global min/max from this NIfTI for color mapping")
     parser.add_argument("--skip-regions", action="store_true", help="Do not export individual region PLYs")
     parser.add_argument("--skip-whole-gm", action="store_true", help="Do not export the whole GM PLY")
+    parser.add_argument("--keep-meshes", action="store_true", help="Keep individual cortical region meshes as .msh files")
     return parser.parse_args()
 
 
@@ -440,6 +477,7 @@ def main():
     global_from_nifti = args.global_from_nifti
     export_regions = not args.skip_regions
     export_whole_gm = not args.skip_whole_gm
+    keep_meshes = args.keep_meshes
 
     if not mesh_path and not args.gm_mesh:
         logger.error("Must provide either --mesh (cortical surface) or --gm-mesh (tetrahedral GM)")
@@ -462,7 +500,7 @@ def main():
 
     run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field_name,
                    use_colors, colormap, field_range, global_from_nifti,
-                   export_regions, export_whole_gm)
+                   export_regions, export_whole_gm, keep_meshes)
     print("Conversion complete.")
     return 0
 
