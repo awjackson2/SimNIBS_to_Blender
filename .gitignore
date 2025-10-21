@@ -5,6 +5,7 @@ data/m2m_directories/*
 
 # Output directories - ignore contents but keep structure  
 output/*
+out/*
 
 # Python cache files
 __pycache__/

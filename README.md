@@ -1,14 +1,14 @@
-# SimNIBS Cortical Region Generator & Blender Converter
+# SimNIBS Cortical Mesh → PLY (Regions + Whole GM)
 
-This repository contains Python scripts for generating cortical regions from SimNIBS mesh files using various brain atlases, and converting them to PLY format for visualization in Blender. The scripts are designed to work with mesh files produced by SimNIBS's `msh2cortex` tool.
-![Untitled drawing (3)](https://github.com/user-attachments/assets/c399e389-9c09-40ea-95ab-ac570068912d)
+This repository provides a single tool to export subject‑specific cortical regions and the whole gray‑matter (GM) surface from SimNIBS `.msh` files to PLY for Blender (or other tools). It uses the subject’s atlas from the `m2m_*` directory to ensure region accuracy (default atlas: `DK40`).
 
 ## Overview
 
-The main functionality includes:
-- **Extract cortical regions** from SimNIBS mesh files using brain atlases
-- **Convert to PLY format** for Blender visualization with field data as vertex colors
-- **Combine individual regions** into collective visualization files
+The single script `scripts/cortical_regions_to_ply.py`:
+- **Exports individual cortical regions to PLY** using the chosen atlas (default `DK40`)
+- **Exports the whole GM surface to PLY**
+- **Optionally samples a NIfTI field onto mesh nodes** and maps it to vertex colors or stores as scalars
+- **Supports global colormap normalization** from a NIfTI file so colors are comparable across regions/meshes
 
 ## Requirements
 
@@ -17,15 +17,13 @@ The main functionality includes:
 - **Python 3.7+**
 - **NumPy**
 - **nibabel** (for NIfTI field data handling)
-- **matplotlib** (optional, for advanced colormaps)
-- **argparse** (standard library)
-- **pathlib** (standard library)
+- **matplotlib** (optional, for colormaps; otherwise a simple blue↔red map is used)
 
 ### Input Requirements
-- SimNIBS mesh file (`.msh`) produced by `msh2cortex`
-- Subject's `m2m_*` directory from SimNIBS head model creation
-- Brain atlas (supported: HCP_MMP1, DKTatlas40, aparc.a2009s)
-- Optional: NIfTI field files (e.g., `*_TI_max.nii.gz`) for field visualization
+- EITHER a cortical surface mesh (`.msh`) produced by `msh2cortex` OR a tetrahedral GM `.msh` (the tool can run `msh2cortex` for you)
+- Subject’s `m2m_*` directory (for the subject atlas)
+- Supported atlases: `DK40` (default), `DKTatlas40`, `HCP_MMP1`, `aparc.a2009s`
+- Optional: NIfTI field file (e.g., `*_TI_max.nii.gz`) for field coloring
 
 ## Installation
 
@@ -46,53 +44,78 @@ The main functionality includes:
 
 ### Basic Usage
 
-Generate cortical regions from a single subject:
+Export atlas‑accurate region PLYs and the whole GM PLY (default atlas: `DK40`):
 
 ```bash
-python simnibs_cortical_regions.py -i subject_central.msh -m m2m_subject -o output_regions
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out \
+  --field-file subject_overlays/subject_TI_max.nii.gz
 ```
 
 ### Command Line Options
 
-#### Main Script (`simnibs_cortical_regions.py`)
-
 ```bash
-python simnibs_cortical_regions.py [OPTIONS]
+simnibs_python scripts/cortical_regions_to_ply.py [OPTIONS]
 
-Required Arguments:
-  -i, --input     Input SimNIBS mesh file (.msh) produced by msh2cortex
-  -m, --m2m       Path to the m2m directory for the subject
+Required (one of):
+  --mesh           Cortical surface .msh (from msh2cortex)
+  --gm-mesh        Tetrahedral GM .msh (the tool will run msh2cortex)
+  --m2m            Subject m2m directory
+  --output-dir     Output directory
 
-Optional Arguments:
-  -a, --atlas     Atlas name (default: HCP_MMP1)
-                  Options: HCP_MMP1, DKTatlas40, aparc.a2009s
-  -o, --output    Output directory (default: current directory)
-  -v, --verbose   Enable verbose output
-  --list-atlases  List available atlases and exit
+Optional:
+  --atlas          Atlas name (default: DK40)
+  --surface        Surface when using --gm-mesh: central|pial|white (default: central)
+  --msh2cortex     Path to msh2cortex executable (if not on PATH)
+  --field-file     NIfTI file to sample onto nodes (e.g., TI_max)
+  --field          Field name to use/store (default: TI_max)
+  --scalars        Store scalars instead of vertex colors
+  --colormap       Colormap name (default: viridis)
+  --field-range    MIN MAX explicit range for mapping
+  --global-from-nifti  Use global min/max from the given NIfTI for color scaling
+  --skip-regions   Do not export individual region PLYs
+  --skip-whole-gm  Do not export the whole GM PLY
 ```
 
 ### Examples
 
-#### 1. Basic region generation with HCP_MMP1 atlas
+1) Regions + whole GM with default atlas and NIfTI colors (surface mesh input):
 ```bash
-python simnibs_cortical_regions.py \
-    -i /path/to/subject_overlays/subject_TDCS_1_scalar_central.msh \
-    -m /path/to/m2m_subject \
-    -o cortical_regions_output
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out \
+  --field-file subject_overlays/subject_TI_max.nii.gz
 ```
 
-#### 2. Use a different atlas
+2) Start from tetrahedral GM mesh (auto-runs msh2cortex):
 ```bash
-python simnibs_cortical_regions.py \
-    -i subject_central.msh \
-    -m m2m_subject \
-    -a DKTatlas40 \
-    -o regions_dk40
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --gm-mesh m2m_subject/subject.msh \
+  --surface central \
+  --m2m m2m_subject \
+  --output-dir out
 ```
 
-#### 3. List available atlases
+3) Without field data (gray colors) and custom atlas:
 ```bash
-python simnibs_cortical_regions.py --list-atlases
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --atlas HCP_MMP1 \
+  --output-dir out
+```
+
+4) Global color normalization from NIfTI (comparable colors across regions):
+```bash
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out \
+  --field-file subject_overlays/subject_TI_max.nii.gz \
+  --global-from-nifti subject_overlays/subject_TI_max.nii.gz
 ```
 
 ## Complete Workflow: From Mesh to Blender
@@ -101,50 +124,15 @@ python simnibs_cortical_regions.py --list-atlases
 
 This section covers the complete pipeline from SimNIBS mesh files to visualization-ready PLY files for Blender.
 
-#### Step 1: Generate Cortical Regions
-
-Extract individual cortical regions from your SimNIBS mesh:
+#### Convert to PLY Format for Blender
 
 ```bash
-# Basic region extraction with DKTatlas40 (recommended for visualization)
-simnibs_python simnibs_cortical_regions.py \
-    -i your_mesh.msh \
-    -m m2m_subject \
-    -a DKTatlas40 \
-    -o output_regions_simple
-```
-
-This creates individual `.msh` files for each cortical region in the `output_regions_simple/` directory.
-
-#### Step 2: Convert to PLY Format for Blender
-
-**Option A: Convert single region with field data**
-```bash
-# Convert one region with TI_max field visualization
-simnibs_python regions_to_blender.py \
-    --region output_regions_simple/lh.superiorfrontal_region.msh \
-    --field-file your_TI_max_field.nii.gz \
-    --output my_region.ply
-```
-
-**Option B: Batch convert all regions**
-```bash
-# Convert all regions to individual PLY files
-simnibs_python regions_to_blender.py \
-    --regions-dir output_regions_simple \
-    --output-dir blender_meshes \
-    --field-file your_TI_max_field.nii.gz \
-    --create-blender-script
-```
-
-**Option C: Create collective PLY file**
-```bash
-# Create both individual PLYs and one combined file
-simnibs_python combine_regions_to_ply.py \
-    --regions-dir output_regions_simple \
-    --field-file your_TI_max_field.nii.gz \
-    --output-individual blender_meshes \
-    --output-combined all_regions_combined.ply
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --gm-mesh m2m_subject/subject.msh \
+  --surface central \
+  --m2m m2m_subject \
+  --output-dir blender_meshes \
+  --field-file subject_overlays/subject_TI_max.nii.gz
 ```
 
 #### Step 3: Import into Blender
@@ -157,69 +145,45 @@ simnibs_python combine_regions_to_ply.py \
    - Use Material Preview/Rendered view with vertex color nodes
 
 **For batch import:**
-- Run the generated `import_regions.py` script in Blender's text editor
-- Or use: `blender --python blender_meshes/import_regions.py`
+- Use Blender's File → Import → Stanford PLY (.ply) and select multiple files
+- Or use Blender's command line: `blender --python your_import_script.py`
 
 ### Advanced Options
 
-#### Custom Field Visualization
-
-**Different colormaps:**
 ```bash
-simnibs_python regions_to_blender.py \
-    --regions-dir output_regions_simple \
-    --output-dir blender_meshes \
-    --field-file your_field.nii.gz \
-    --colormap plasma  # Options: viridis, plasma, inferno, magma, jet
-```
+# Different colormap
+--colormap plasma
 
-**Custom field range:**
-```bash
-simnibs_python regions_to_blender.py \
-    --regions-dir output_regions_simple \
-    --output-dir blender_meshes \
-    --field-file your_field.nii.gz \
-    --field-range 0.0 1.0  # Specify min and max values
-```
+# Explicit field range
+--field-range 0.0 1.5
 
-**Store as scalars instead of colors:**
-```bash
-simnibs_python regions_to_blender.py \
-    --regions-dir output_regions_simple \
-    --output-dir blender_meshes \
-    --field-file your_field.nii.gz \
-    --scalars  # Store field values as vertex attributes
+# Store as scalars instead of vertex colors
+--scalars
 ```
 
 #### Without Field Data
 
-If you don't have field data, you can still visualize the region geometry:
+If you don't have field data, you can still visualize the region geometry (gray):
 
 ```bash
-# Convert regions without field data (gray meshes)
-simnibs_python regions_to_blender.py \
-    --regions-dir output_regions_simple \
-    --output-dir blender_meshes
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --gm-mesh m2m_subject/subject.msh \
+  --m2m m2m_subject \
+  --output-dir blender_meshes \
+  --scalars
 ```
 
 ### Output Structure
 
-After running the complete workflow, you'll have:
-
 ```
 project_directory/
-├── output_regions_simple/           # Individual region mesh files
-│   ├── lh.bankssts_region.msh
-│   ├── lh.superiorfrontal_region.msh
-│   ├── rh.bankssts_region.msh
-│   └── ...
-├── blender_meshes/                  # Individual PLY files for Blender
-│   ├── lh.bankssts_region.ply
-│   ├── lh.superiorfrontal_region.ply
-│   ├── rh.bankssts_region.ply
-│   ├── import_regions.py            # Auto-generated Blender script
-│   └── ...
-└── all_regions_combined.ply         # Single file with all regions
+├── out/
+│   ├── regions/                     # Individual region PLYs
+│   │   ├── lh.bankssts_region.ply
+│   │   ├── lh.superiorfrontal_region.ply
+│   │   ├── rh.bankssts_region.ply
+│   │   └── ...
+│   └── whole_gm.ply                 # Whole GM surface
 ```
 
 ## Supported Atlases
@@ -229,7 +193,7 @@ project_directory/
 - **Based on**: Multi-modal MRI features
 - **Reference**: Glasser et al. (2016) Nature
 
-### DKTatlas40 (Desikan-Killiany-Tourville)
+### DK40 (Desikan-Killiany 40) / DKTatlas40 (Desikan-Killiany-Tourville)
 - **Regions**: ~40 cortical areas per hemisphere
 - **Based on**: Structural MRI
 - **Reference**: Desikan et al. (2006) NeuroImage
@@ -241,77 +205,27 @@ project_directory/
 
 ## Output Files
 
-### Generated Region Files
-For each cortical region, the script generates:
-- **`<region_name>_region.msh`**: Individual region mesh file (SimNIBS format)
-- **`<region_name>_region.ply`**: Individual region PLY file (Blender format)
-- Contains the original mesh with region-specific node fields and field visualization
+- **Region PLYs**: `<region_name>_region.ply` for each atlas region
+- **Whole GM PLY**: `whole_gm.ply`
 
-### Summary Files
-- **`cortical_regions_summary.txt`**: Text summary of all generated regions
-- **`regions_summary.csv`**: CSV table with region statistics (optional)
-- **`import_regions.py`**: Auto-generated Blender import script
-
-### Blender-Ready Files
-- **Individual PLY files**: Each region as a separate Blender-importable file
-- **Combined PLY file**: All regions merged into a single visualization file
-- **Vertex colors**: Field data (e.g., TI_max) mapped to vertex colors using configurable colormaps
-- **Blender import script**: Automated batch import with proper naming and color settings
-
-### Example Output Structure
-```
-project_directory/
-├── region_meshes/                   # SimNIBS mesh files
-│   ├── lh.area1_region.msh
-│   ├── lh.area2_region.msh
-│   ├── rh.area1_region.msh
-│   ├── ...
-│   └── cortical_regions_summary.txt
-├── blender_meshes/                  # Blender-ready PLY files
-│   ├── lh.area1_region.ply         # Individual regions with field colors
-│   ├── lh.area2_region.ply
-│   ├── rh.area1_region.ply
-│   ├── ...
-│   └── import_regions.py           # Batch import script
-└── all_regions_combined.ply        # Single combined file
-```
 
 ## Workflow Integration
 
-### Typical SimNIBS Workflow
-
-1. **Create head model** using SimNIBS:
+1. Create head model (SimNIBS):
    ```bash
-   # Using SimNIBS GUI or command line
    headreco -i T1.nii.gz -o m2m_subject
    ```
-
-2. **Run simulation** (TMS/tDCS):
-   ```bash
-   # Your simulation script here
-   simnibs_python your_simulation.py
-   ```
-
-3. **Map to cortical surface**:
+2. Map to cortical surface (optional if using --gm-mesh in this tool):
    ```bash
    msh2cortex -i simulation_result.msh -m m2m_subject -o subject_overlays
    ```
-
-4. **Generate cortical regions**:
+3. Export regions + whole GM to PLY:
    ```bash
-   simnibs_python simnibs_cortical_regions.py \
-       -i subject_overlays/simulation_result_central.msh \
-       -m m2m_subject \
-       -o cortical_regions
-   ```
-
-5. **Convert to PLY for Blender visualization**:
-   ```bash
-   simnibs_python regions_to_blender.py \
-       --regions-dir cortical_regions \
-       --output-dir blender_visualization \
-       --field-file subject_overlays/simulation_result_TI_max.nii.gz \
-       --create-blender-script
+   simnibs_python scripts/cortical_regions_to_ply.py \
+     --mesh subject_overlays/simulation_result_central.msh \
+     --m2m m2m_subject \
+     --output-dir blender_visualization \
+     --field-file subject_overlays/simulation_result_TI_max.nii.gz
    ```
 
 ## Troubleshooting
@@ -366,30 +280,20 @@ For script-specific issues, please create an issue in this repository.
 
 ## Quick Reference
 
-### Essential Commands
-
-**Generate cortical regions:**
 ```bash
-simnibs_python simnibs_cortical_regions.py -i mesh.msh -m m2m_subject -a DKTatlas40 -o regions
+# Default (DK40), regions + whole GM, with field colors
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out \
+  --field-file subject_overlays/subject_TI_max.nii.gz
+
+# No field file (gray), only whole GM
+simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_overlays/subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out \
+  --skip-regions
 ```
 
-**Convert to Blender (individual PLYs):**
-```bash
-simnibs_python regions_to_blender.py --regions-dir regions --output-dir ply_files --field-file field.nii.gz
-```
-
-**Convert single region:**
-```bash
-simnibs_python regions_to_blender.py --region regions/lh.area.msh --field-file field.nii.gz --output region.ply
-```
-
-### Script Files
-
-- **`simnibs_cortical_regions.py`**: Main region extraction script
-- **`simnibs_region_utils.py`**: Utility functions (batch processing, analysis)
-- **`regions_to_blender.py`**: Convert regions to PLY format with field visualization
-- **`mesh_to_ply_converter.py`**: General mesh-to-PLY conversion utilities
-
-### Required with simnibs_python
-
-⚠️ **Important**: Always use `simnibs_python` instead of regular `python` to ensure proper SimNIBS environment activation. 
+⚠️ Always use `simnibs_python` instead of regular `python` to ensure the SimNIBS environment is active.
