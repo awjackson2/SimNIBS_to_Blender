@@ -9,16 +9,14 @@ Features:
 - Optional: keep individual region meshes and whole GM mesh as .msh files
 - Optional: sample a NIfTI field onto mesh nodes; colorize via colormap or store scalars
 - Optional: global colormap normalization from NIfTI min/max
-- Optional: generate a Blender import script
 
-Usage examples:
+Examples:
     simnibs_python cortical_regions_to_ply.py \
         --mesh subject_central.msh \
         --m2m m2m_subject \
         --output-dir out \
         --atlas DKTatlas40 \
-        --field-file subject_TI_max.nii.gz \
-        --create-blender-script
+        --field-file subject_TI_max.nii.gz
 
     simnibs_python cortical_regions_to_ply.py \
         --mesh subject_central.msh \
@@ -65,9 +63,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-# ---------- PLY Writers and Colormaps ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# PLY Writers and Colormaps
+# ──────────────────────────────────────────────────────────────────────────────
 
 def write_ply_with_colors(vertices, faces, colors, output_path, field_name="TI_max"):
+    """Write PLY file with vertex colors."""
     n_vertices = len(vertices)
     n_faces = len(faces)
     with open(output_path, 'w') as f:
@@ -93,6 +94,7 @@ def write_ply_with_colors(vertices, faces, colors, output_path, field_name="TI_m
 
 
 def write_ply_with_scalars(vertices, faces, scalars, output_path, field_name="TI_max"):
+    """Write PLY file with scalar field data."""
     n_vertices = len(vertices)
     n_faces = len(faces)
     with open(output_path, 'w') as f:
@@ -116,6 +118,7 @@ def write_ply_with_scalars(vertices, faces, scalars, output_path, field_name="TI
 
 
 def simple_colormap(field_values, vmin=None, vmax=None):
+    """Create simple blue-red colormap for field values."""
     if vmin is None:
         vmin = np.nanmin(field_values)
     if vmax is None:
@@ -133,6 +136,7 @@ def simple_colormap(field_values, vmin=None, vmax=None):
 
 
 def field_to_colormap(field_values, colormap='viridis', vmin=None, vmax=None):
+    """Apply matplotlib colormap to field values."""
     try:
         import matplotlib.cm as cm
     except ImportError:
@@ -153,9 +157,12 @@ def field_to_colormap(field_values, colormap='viridis', vmin=None, vmax=None):
     return colors_rgb
 
 
-# ---------- Field Utilities ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# Field Utilities
+# ──────────────────────────────────────────────────────────────────────────────
 
 def calculate_global_field_range(field_file_path, mesh_file_path=None):
+    """Calculate global min/max field range from NIfTI file."""
     try:
         nii = nib.load(field_file_path)
         field_data = nii.get_fdata()
@@ -188,6 +195,7 @@ def calculate_global_field_range(field_file_path, mesh_file_path=None):
 
 
 def apply_field_from_nifti(mesh, nifti_path, field_name="TI_max"):
+    """Sample NIfTI field data onto mesh nodes."""
     try:
         nii = nib.load(nifti_path)
         field_data = nii.get_fdata()
@@ -216,9 +224,12 @@ def apply_field_from_nifti(mesh, nifti_path, field_name="TI_max"):
         return mesh
 
 
-# ---------- Mesh/Atlas Utilities ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# Mesh/Atlas Utilities
+# ──────────────────────────────────────────────────────────────────────────────
 
 def extract_region_mesh(mesh, region_mask):
+    """Extract mesh region based on node mask."""
     try:
         nodes_to_keep = np.where(region_mask)[0]
         if nodes_to_keep.size == 0:
@@ -245,6 +256,7 @@ def extract_region_mesh(mesh, region_mask):
 
 
 def mesh_vertices_faces_and_field(mesh, field_name="TI_max"):
+    """Extract vertices, faces, and field data from mesh."""
     triangles = mesh.elm[mesh.elm.elm_type == 2]
     if len(triangles) == 0:
         return None, None, None
@@ -271,9 +283,12 @@ def mesh_vertices_faces_and_field(mesh, field_name="TI_max"):
 
 
 
-# ---------- Main Orchestration ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# Main Orchestration
+# ──────────────────────────────────────────────────────────────────────────────
 
 def export_mesh_to_ply(mesh, ply_path, field_name, use_colors, colormap, field_range):
+    """Export mesh to PLY format with optional field coloring."""
     vertices, faces, field_data = mesh_vertices_faces_and_field(mesh, field_name)
     if vertices is None or faces is None:
         logger.error("Mesh has no triangular elements to export")
@@ -298,6 +313,7 @@ def export_mesh_to_ply(mesh, ply_path, field_name, use_colors, colormap, field_r
 def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field_name,
                    use_colors, colormap, field_range, global_from_nifti,
                    export_regions, export_whole_gm, keep_meshes):
+    """Main conversion workflow."""
     mesh = read_msh(mesh_path)
     logger.info(f"Loaded mesh: {mesh_path}")
     atlas = subject_atlas(atlas_name, str(m2m_dir))
@@ -371,6 +387,7 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
 
 
 def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
+    """Resolve msh2cortex executable path."""
     if explicit_path:
         p = Path(explicit_path)
         if p.exists():
@@ -401,6 +418,7 @@ def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
 
 
 def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central", msh2cortex_path: str | None = None):
+    """Generate cortical surface mesh from tetrahedral GM mesh using msh2cortex."""
     logger.info(f"Running msh2cortex on tetrahedral GM mesh: {gm_mesh_path}")
     exe = _resolve_msh2cortex(msh2cortex_path)
     if not exe:
@@ -442,6 +460,7 @@ def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central
 
 
 def parse_args():
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Export cortical regions and whole GM surface to PLY")
     parser.add_argument("--mesh", help="Input cortical surface mesh (.msh) from msh2cortex")
     parser.add_argument("--gm-mesh", help="Input tetrahedral GM .msh (volumetric); will run msh2cortex")
@@ -463,6 +482,7 @@ def parse_args():
 
 
 def main():
+    """Main entry point."""
     args = parse_args()
     mesh_path = args.mesh
     m2m_dir = args.m2m
