@@ -1,4 +1,4 @@
-# SimNIBS Mesh Region Extractor
+# SimNIBS to Blender
 
 Tools for exporting SimNIBS mesh data to PLY format for visualization in Blender and other 3D software.
 
