@@ -91,15 +91,12 @@ def write_ply_arrows(output_file, positions, vectors, magnitudes, colors, *,
     """Write multiple arrows as a colored PLY file (ASCII)."""
     total = len(positions)
     if total == 0:
-        print(f"No vectors to write for {output_file}")
         return
 
     all_vertices = []
     all_faces = []
     all_colors = []
 
-    print(f"Building arrows: 0/{total} -> {output_file}")
-    step = max(1, total // 100) if total >= 100 else 1
     for i in range(total):
         arrow = create_arrow(
             positions[i], vectors[i], magnitudes[i],
@@ -113,11 +110,7 @@ def write_ply_arrows(output_file, positions, vectors, magnitudes, colors, *,
         for _ in range(len(arrow.vertices)):
             all_colors.append(colors[i])
 
-        if (i + 1) % step == 0 or (i + 1) % 10000 == 0 or (i + 1) == total:
-            print(f"Building arrows: {i+1}/{total}")
-
     if not all_vertices:
-        print(f"No geometry created for {output_file}")
         return
 
     with open(output_file, 'w') as f:
@@ -215,6 +208,7 @@ def map_magnitude_to_colors_magscale(magnitudes, *,
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
+    print("Starting...")
     ap = argparse.ArgumentParser(
         description="Export CH1, CH2, TI/mTI vector arrows to PLY (optional SUM, TI_normal)")
 
@@ -258,14 +252,12 @@ def main():
     # Validate paths
     for p in [args.mesh1, args.mesh2]:
         if not os.path.exists(p):
-            print(f"Input mesh not found: {p}")
             return 1
     m3 = m4 = None
     is_mti = args.mti is not None
     if is_mti:
         m3_path, m4_path = args.mti
         if not os.path.exists(m3_path) or not os.path.exists(m4_path):
-            print("mTI mode requires valid mesh3 and mesh4 paths")
             return 1
 
     # Read meshes
@@ -289,7 +281,6 @@ def main():
     # Extract E fields
     for idx, m in enumerate([m1, m2] + ([m3, m4] if is_mti else []), start=1):
         if 'E' not in m.field:
-            print(f"E field missing in mesh{idx}")
             return 1
 
     E1 = m1.field['E'].value
@@ -365,14 +356,11 @@ def main():
                 E_sum = E_sum[mask]
             if TI_normal is not None:
                 TI_normal = TI_normal[mask]
-            if args.verbose:
-                print(f"Applied --top-percent {pct:.1f}: kept {len(positions)} vectors (cutoff={cutoff:.6f})")
 
     # Sampling
     np.random.seed(args.seed)
     sel_count = min(int(args.count), len(positions))
     if sel_count <= 0:
-        print("No vectors available after filtering")
         return 1
     idx = np.random.choice(len(positions), sel_count, replace=False)
 
@@ -444,9 +432,7 @@ def main():
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
-    # Report
-    print(f"Available (non-zero) vectors: {len(positions)} | Sampling: {len(pos_s)}")
-
+    print("Converting...")
     # Write per-type PLYs (defaults: CH1, CH2, TI/mTI)
     write_ply_arrows(
         f"{args.output_prefix}_CH1.ply", pos_s, E1_s, mag_E1_s, ch1_colors,
@@ -509,25 +495,26 @@ def main():
             vector_scale=args.vector_scale, base_length=args.vector_length, shaft_width=args.vector_width,
         )
 
-    # Summary
-    print("\n✓ Exported:")
-    print(f"  {args.output_prefix}_CH1.ply")
-    print(f"  {args.output_prefix}_CH2.ply")
+    # Count exported files
+    exported_count = 2  # CH1, CH2
     if is_mti:
-        print(f"  {args.output_prefix}_mTI.ply")
+        exported_count += 1  # mTI
         if E_sum_s is not None:
-            print(f"  {args.output_prefix}_SUM4.ply")
+            exported_count += 1  # SUM4
         if TI_normal_s is not None:
-            print(f"  {args.output_prefix}_mTI_normal.ply")
+            exported_count += 1  # mTI_normal
     else:
-        print(f"  {args.output_prefix}_TI.ply")
+        exported_count += 1  # TI
         if E_sum_s is not None:
-            print(f"  {args.output_prefix}_SUM.ply")
+            exported_count += 1  # SUM
         if TI_normal_s is not None:
-            print(f"  {args.output_prefix}_TI_normal.ply")
+            exported_count += 1  # TI_normal
     if args.combined:
-        print(f"  {args.output_prefix}_combined.ply")
+        exported_count += 1  # combined
 
+    print(f"Converted {exported_count} vector PLY files.")
+    print(f"Output: {os.path.dirname(args.output_prefix) if os.path.dirname(args.output_prefix) else '.'}")
+    print("Finishing...")
     return 0
 
 

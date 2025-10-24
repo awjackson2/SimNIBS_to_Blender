@@ -1,7 +1,5 @@
 # Data directories - ignore contents but keep structure
-data/field_data/*
-data/input_meshes/*
-data/m2m_directories/*
+data/*
 
 # Output directories - ignore contents but keep structure  
 output/*

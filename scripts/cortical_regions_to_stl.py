@@ -1,78 +1,39 @@
 #!/usr/bin/env python3
 """
-Single-tool converter: generate atlas-accurate cortical region STLs and a whole-GM STL.
+MSH to STL Converter: Extract cortical regions from atlas and export as STL files
 
-Features:
-- Loads subject cortical surface mesh (.msh from msh2cortex) and subject atlas (default DKTatlas40)
-- Exports individual region meshes as binary STL
-- Exports the full GM surface as a single STL
-- Optional: keep individual region meshes and whole GM mesh as .msh files
-- Optional: generate cortical surface from tetrahedral GM mesh using msh2cortex
+This script processes all cortical regions in a specified atlas, creates ROI meshes 
+with preserved field values, and exports each region as an individual STL file.
 
-Examples:
-    simnibs_python cortical_regions_to_stl.py \
-        --mesh subject_central.msh \
-        --m2m m2m_subject \
-        --output-dir out \
-        --atlas DKTatlas40
+Usage:
+    python cortical_regions_to_stl.py --mesh /path/to/surface.msh --m2m /path/to/m2m_001 --atlas DK40 --field TI_max --output-dir /path/to/output
 
-    simnibs_python cortical_regions_to_stl.py \
-        --gm-mesh m2m_subject/subject.msh \
-        --m2m m2m_subject \
-        --output-dir out \
-        --surface central
-
-    simnibs_python cortical_regions_to_stl.py \
-        --mesh subject_central.msh \
-        --m2m m2m_subject \
-        --output-dir out \
-        --keep-meshes
+Dependencies:
+    - numpy
+    - simnibs
+    - subprocess (for msh2cortex operations)
 """
 
 import argparse
 import os
-import sys
-import logging
-import struct
-from pathlib import Path
-import numpy as np
-import tempfile
 import subprocess
-import shutil
-import platform
+import sys
+import tempfile
+import time
+from pathlib import Path
 
-try:
-    import simnibs
-    from simnibs import read_msh
-    from simnibs.utils.transformations import subject_atlas
-except ImportError:
-    print("Error: SimNIBS not found. Please install SimNIBS and activate the environment.")
-    sys.exit(1)
-
-try:
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
-except ImportError:
-    print("Error: scipy not found. Please install scipy in the SimNIBS environment.")
-    sys.exit(1)
-
-
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# STL Writer
-# ──────────────────────────────────────────────────────────────────────────────
+import numpy as np
+import simnibs
 
 def write_binary_stl(vertices, faces, output_path):
     """Write binary STL file from vertices and faces."""
+    import struct
+    
     n_faces = len(faces)
     
     with open(output_path, 'wb') as f:
         # Write 80-byte header
-        header = f"Generated from SimNIBS mesh".encode('ascii')
+        header = f"Generated from SimNIBS ROI mesh".encode('ascii')
         header = header.ljust(80, b'\x00')
         f.write(header)
         
@@ -108,442 +69,276 @@ def write_binary_stl(vertices, faces, output_path):
             # Write attribute byte count (2 bytes, little-endian)
             f.write(struct.pack('<H', 0))
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Mesh/Atlas Utilities
-# ──────────────────────────────────────────────────────────────────────────────
-
-def validate_mesh_quality(mesh, min_triangles=10):
-    """Validate that a mesh has sufficient quality for STL export."""
-    if mesh is None:
-        return False
+def extract_roi_region_no_zeros(mesh, roi_values, min_triangles=10):
+    """Extract ROI region by removing only zero values (no threshold)."""
     
-    triangles = np.sum(mesh.elm.elm_type == 2)
-    if triangles < min_triangles:
-        return False
+    # Find nodes with non-zero values
+    roi_nodes = np.where(roi_values > 0)[0]
+    roi_node_set = set(roi_nodes)
+    
+    if len(roi_nodes) == 0:
+        return None, None
+    
+    # Get triangular elements
+    triangular_elements = mesh.elm.elm_type == 2
+    triangle_indices = np.where(triangular_elements)[0]
+    triangle_nodes = mesh.elm.node_number_list[triangular_elements] - 1  # Convert to 0-based
+    
+    # Find triangles where at least 2 out of 3 vertices are in the ROI
+    triangles_in_roi = []
+    for i, triangle in enumerate(triangle_nodes):
+        vertices_in_roi = sum(1 for node_idx in triangle if node_idx in roi_node_set)
+        if vertices_in_roi >= 2:  # At least 2 out of 3 vertices in ROI
+            triangles_in_roi.append(i)
+    
+    if len(triangles_in_roi) < min_triangles:
+        return None, None
+    
+    # Get the triangles that are in the ROI
+    roi_triangles = triangle_nodes[triangles_in_roi]
+    
+    # Get unique vertices used in these triangles
+    unique_vertices = np.unique(roi_triangles.flatten())
+    
+    # Create vertex mapping (old index -> new index)
+    vertex_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(unique_vertices)}
+    
+    # Remap triangle indices to new vertex indices
+    remapped_triangles = np.array([
+        [vertex_mapping[face[0]], vertex_mapping[face[1]], vertex_mapping[face[2]]] 
+        for face in roi_triangles
+    ])
+    
+    # Extract vertex coordinates
+    vertices = mesh.nodes.node_coord[unique_vertices]
+    
+    return vertices, remapped_triangles
+
+def generate_surface_mesh(field_mesh_path, subject_dir):
+    """
+    Generate a surface mesh from the field mesh using msh2cortex if not already generated.
+    This is used for cortical analysis.
+    
+    Returns:
+        str: Path to the generated surface mesh file
+    """
+    # Get the base name of the input mesh
+    input_name = os.path.basename(field_mesh_path)
+    base_name = os.path.splitext(input_name)[0]
+    
+    # Create surface mesh in the same directory as the input mesh
+    mesh_dir = os.path.dirname(field_mesh_path)
+    surface_mesh_path = os.path.join(mesh_dir, f"{base_name}_central.msh")
+    
+    # If we already have a valid surface mesh, return it
+    if os.path.exists(surface_mesh_path):
+        return surface_mesh_path
         
-    # Check for degenerate triangles (very small area)
     try:
-        vertices, faces = mesh_vertices_faces(mesh)
+        # Run msh2cortex command only for this specific field mesh
+        cmd = [
+            'msh2cortex',
+            '-i', field_mesh_path,
+            '-m', subject_dir,
+            '-o', mesh_dir
+        ]
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        if not os.path.exists(surface_mesh_path):
+            raise FileNotFoundError(f"Expected surface mesh file not found at: {surface_mesh_path}")
+        
+        return surface_mesh_path
+        
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Failed to generate surface mesh using msh2cortex")
+    except FileNotFoundError as e:
+        raise
+
+def create_roi_mesh(surface_mesh, roi_mask, field_values, field_name, region_name, temp_dir):
+    """
+    Create a ROI mesh with preserved field values for the specified region.
+    
+    Args:
+        surface_mesh: The surface mesh object
+        roi_mask: Boolean mask for the ROI
+        field_values: Original field values
+        field_name: Name of the field
+        region_name: Name of the region
+        temp_dir: Temporary directory for intermediate files
+        
+    Returns:
+        str: Path to the temporary ROI mesh file
+    """
+    # Create new field values array initialized to zeros
+    roi_field_values = np.zeros_like(field_values)
+    
+    # Preserve original field values only for ROI nodes
+    roi_field_values[roi_mask] = field_values[roi_mask]
+    
+    # Create a new mesh by reading the original mesh file and modifying it
+    # This avoids the copy() method issues
+    temp_mesh_path = os.path.join(temp_dir, f"{region_name}_roi.msh")
+    
+    # Write the original mesh to temp file first
+    surface_mesh.write(temp_mesh_path)
+    
+    # Read it back and modify the field
+    roi_mesh = simnibs.read_msh(temp_mesh_path)
+    
+    # Replace the field with our ROI version
+    roi_mesh.field[field_name].value = roi_field_values
+    
+    # Write the modified mesh
+    roi_mesh.write(temp_mesh_path)
+    
+    return temp_mesh_path
+
+def process_region_to_stl(surface_mesh, atlas, region_name, field_name, output_dir, atlas_type, temp_dir):
+    """
+    Process a single region: create ROI mesh and convert to STL.
+    
+    Args:
+        surface_mesh: The surface mesh object
+        atlas: The atlas object
+        region_name: Name of the region to process
+        field_name: Name of the field to preserve
+        output_dir: Output directory for STL files
+        atlas_type: Type of atlas (for subdirectory)
+        temp_dir: Temporary directory for intermediate files
+        
+    Returns:
+        bool: True if successful, False if skipped
+    """
+    try:
+        # Get ROI mask for this region
+        roi_mask = atlas[region_name]
+        
+        # Check if we have any nodes in the ROI
+        roi_nodes_count = np.sum(roi_mask)
+        if roi_nodes_count == 0:
+            return False
+        
+        # Get the field values within the ROI
+        field_values = surface_mesh.field[field_name].value
+        field_values_in_roi = field_values[roi_mask]
+        
+        # Filter for positive values in ROI
+        positive_mask = field_values_in_roi > 0
+        field_values_positive = field_values_in_roi[positive_mask]
+        
+        # Check if we have any positive values in the ROI
+        positive_count = len(field_values_positive)
+        if positive_count == 0:
+            return False
+        
+        # Create ROI mesh
+        temp_mesh_path = create_roi_mesh(surface_mesh, roi_mask, field_values, field_name, region_name, temp_dir)
+        
+        # Load the ROI mesh for STL conversion
+        roi_mesh = simnibs.read_msh(temp_mesh_path)
+        
+        # Get the ROI field values for STL extraction
+        roi_field_values = roi_mesh.field[field_name].value
+        
+        # Extract ROI region (remove zero values)
+        vertices, faces = extract_roi_region_no_zeros(roi_mesh, roi_field_values)
+        
         if vertices is None or faces is None:
             return False
-            
-        # Calculate triangle areas
-        areas = []
-        for face in faces:
-            v0, v1, v2 = vertices[face]
-            area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0))
-            areas.append(area)
         
-        areas = np.array(areas)
-        valid_triangles = np.sum(areas > 1e-10)  # Remove degenerate triangles
+        # Create output directory structure
+        cortical_stls_dir = os.path.join(output_dir, "cortical_stls")
+        atlas_output_dir = os.path.join(cortical_stls_dir, atlas_type)
+        os.makedirs(atlas_output_dir, exist_ok=True)
         
-        return valid_triangles >= min_triangles
-    except Exception:
+        # Write STL file
+        stl_path = os.path.join(atlas_output_dir, f"{region_name}.stl")
+        write_binary_stl(vertices, faces, stl_path)
+        
+        # Clean up temporary mesh file
+        os.remove(temp_mesh_path)
+        
+        return True
+        
+    except Exception as e:
         return False
-
-
-def extract_region_mesh_connected(mesh, region_mask, min_triangles=10):
-    """Extract mesh region using connected component analysis for clean segmentation."""
-    try:
-        # Get triangular elements only
-        triangular_elements = mesh.elm.elm_type == 2
-        if not np.any(triangular_elements):
-            logger.warning("No triangular elements found in mesh")
-            return None
-            
-        triangle_indices = np.where(triangular_elements)[0]
-        triangle_nodes = mesh.elm.node_number_list[triangular_elements] - 1
-        region_node_set = set(np.where(region_mask)[0])
-        
-        # Step 1: Find triangles where ALL vertices are in the region (strict inclusion)
-        complete_triangles = []
-        for i, tri in enumerate(triangle_nodes):
-            if all(v in region_node_set for v in tri[:3]):
-                complete_triangles.append(triangle_indices[i])
-        
-        if len(complete_triangles) == 0:
-            logger.warning("No complete triangles found in region")
-            return None
-        
-        logger.debug(f"Found {len(complete_triangles)} complete triangles in region")
-        
-        # Step 2: Build adjacency graph for connected component analysis
-        
-        # Create node-to-triangle mapping
-        node_to_triangles = {}
-        for i, tri_idx in enumerate(complete_triangles):
-            tri_nodes = triangle_nodes[triangle_indices == tri_idx][0]
-            for node in tri_nodes:
-                if node not in node_to_triangles:
-                    node_to_triangles[node] = []
-                node_to_triangles[node].append(i)
-        
-        # Build adjacency matrix for triangles
-        n_triangles = len(complete_triangles)
-        adjacency = np.zeros((n_triangles, n_triangles), dtype=bool)
-        
-        for node, tri_list in node_to_triangles.items():
-            # Connect all triangles that share this node
-            for i in range(len(tri_list)):
-                for j in range(i + 1, len(tri_list)):
-                    tri_i, tri_j = tri_list[i], tri_list[j]
-                    adjacency[tri_i, tri_j] = True
-                    adjacency[tri_j, tri_i] = True
-        
-        # Step 3: Find largest connected component
-        n_components, labels = connected_components(csr_matrix(adjacency), directed=False)
-        
-        if n_components == 0:
-            logger.warning("No connected components found")
-            return None
-        
-        # Find the largest component
-        component_sizes = np.bincount(labels)
-        largest_component = np.argmax(component_sizes)
-        largest_size = component_sizes[largest_component]
-        
-        logger.debug(f"Found {n_components} connected components, largest has {largest_size} triangles")
-        
-        if largest_size < min_triangles:
-            logger.warning(f"Largest component too small: {largest_size} < {min_triangles}")
-            return None
-        
-        # Step 4: Extract the largest connected component
-        component_triangles = []
-        for i, label in enumerate(labels):
-            if label == largest_component:
-                component_triangles.append(complete_triangles[i])
-        
-        # Step 5: Create the region mesh
-        elements_to_keep = np.array(component_triangles)
-        region_mesh = mesh.crop_mesh(elements=elements_to_keep)
-        
-        if region_mesh is not None and len(region_mesh.nodes.node_coord) > 0:
-            final_triangles = np.sum(region_mesh.elm.elm_type == 2)
-            logger.debug(f"Extracted connected region with {final_triangles} triangles")
-            return region_mesh
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to extract connected region mesh: {e}")
-        return None
-
-
-def extract_region_mesh(mesh, region_mask, min_triangles=10, method="connected"):
-    """Extract mesh region using specified method."""
-    if method == "connected":
-        # Try the new connected component method first
-        region_mesh = extract_region_mesh_connected(mesh, region_mask, min_triangles)
-        if region_mesh is not None:
-            return region_mesh
-        logger.debug("Connected component method failed, falling back to original")
-    
-    # Use original method
-    try:
-        # Primary method: use SimNIBS crop_mesh with nodes
-        nodes_to_keep = np.where(region_mask)[0]
-        if nodes_to_keep.size == 0:
-            return None
-        
-        logger.debug(f"Attempting node-based cropping with {len(nodes_to_keep)} nodes")
-        region_mesh = mesh.crop_mesh(nodes=nodes_to_keep)
-        
-        # Validate the result
-        if region_mesh is not None and len(region_mesh.nodes.node_coord) > 0:
-            triangles = np.sum(region_mesh.elm.elm_type == 2)
-            if triangles >= min_triangles:
-                logger.debug(f"Node-based cropping successful: {triangles} triangles")
-                return region_mesh
-        
-    except Exception as e:
-        logger.debug(f"Node-based cropping failed: {e}")
-    
-    # Final fallback: element-based filtering
-    try:
-        logger.debug("Falling back to element-based filtering")
-        triangular_elements = mesh.elm.elm_type == 2
-        if not np.any(triangular_elements):
-            return None
-            
-        triangle_indices = np.where(triangular_elements)[0]
-        triangle_nodes = mesh.elm.node_number_list[triangular_elements] - 1
-        region_node_set = set(np.where(region_mask)[0].tolist())
-        
-        triangles_in_region = []
-        for i, tri in enumerate(triangle_nodes):
-            if sum((v in region_node_set) for v in tri[:3]) >= 2:
-                triangles_in_region.append(triangle_indices[i])
-        
-        if len(triangles_in_region) == 0:
-            return None
-            
-        elements_to_keep = np.array(triangles_in_region)
-        region_mesh = mesh.crop_mesh(elements=elements_to_keep)
-        
-        if region_mesh is not None and len(region_mesh.nodes.node_coord) > 0:
-            triangles = np.sum(region_mesh.elm.elm_type == 2)
-            if triangles >= min_triangles:
-                logger.debug(f"Element-based filtering successful: {triangles} triangles")
-                return region_mesh
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Failed to extract region mesh: {e}")
-        return None
-
-
-def mesh_vertices_faces(mesh):
-    """Extract vertices and faces from mesh (geometry only)."""
-    triangles = mesh.elm[mesh.elm.elm_type == 2]
-    if len(triangles) == 0:
-        return None, None
-    if hasattr(triangles, 'node_number_list'):
-        triangle_nodes = triangles.node_number_list[:, :3] - 1
-    else:
-        triangle_nodes = triangles[:, :3] - 1
-    unique_nodes = np.unique(triangle_nodes.flatten())
-    node_map = {old_idx: new_idx for new_idx, old_idx in enumerate(unique_nodes)}
-    vertices = mesh.nodes.node_coord[unique_nodes]
-    faces = np.array([[node_map[idx] for idx in tri] for tri in triangle_nodes], dtype=np.int32)
-    return vertices, faces
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main Orchestration
-# ──────────────────────────────────────────────────────────────────────────────
-
-def export_mesh_to_stl(mesh, stl_path):
-    """Export mesh to STL format."""
-    vertices, faces = mesh_vertices_faces(mesh)
-    if vertices is None or faces is None:
-        logger.error("Mesh has no triangular elements to export")
-        return False
-    
-    write_binary_stl(vertices, faces, stl_path)
-    return True
-
-
-def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name,
-                   export_regions, export_whole_gm, keep_meshes, min_triangles, segmentation_method):
-    """Main conversion workflow."""
-    mesh = read_msh(mesh_path)
-    logger.info(f"Loaded mesh: {mesh_path}")
-    
-    # Log mesh statistics
-    total_nodes = len(mesh.nodes.node_coord)
-    total_triangles = np.sum(mesh.elm.elm_type == 2)
-    total_elements = len(mesh.elm.elm_type)
-    logger.info(f"Mesh statistics: {total_nodes} nodes, {total_triangles} triangles, {total_elements} total elements")
-    
-    atlas = subject_atlas(atlas_name, str(m2m_dir))
-    logger.info(f"Loaded atlas '{atlas_name}' with {len(atlas.keys())} regions")
-    
-    # Log atlas statistics
-    for region_name, region_mask in list(atlas.items())[:5]:  # Show first 5 regions
-        region_nodes = np.sum(region_mask)
-        logger.debug(f"Region '{region_name}': {region_nodes} nodes ({region_nodes/total_nodes*100:.1f}%)")
-
-    regions_out_dir = Path(output_dir) / "regions"
-    regions_out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create meshes directory if keeping meshes
-    if keep_meshes:
-        meshes_out_dir = Path(output_dir) / "meshes"
-        meshes_out_dir.mkdir(parents=True, exist_ok=True)
-
-    if export_regions:
-        success_count = 0
-        mesh_success_count = 0
-        for region_name, region_mask in atlas.items():
-            # Log region statistics
-            region_nodes = np.sum(region_mask)
-            logger.info(f"Processing region '{region_name}' with {region_nodes} nodes")
-            
-            region_mesh = extract_region_mesh(mesh, region_mask, min_triangles, segmentation_method)
-            if region_mesh is None:
-                logger.warning(f"Skipping region with no mesh: {region_name}")
-                continue
-            
-            # Log extracted mesh statistics
-            extracted_nodes = len(region_mesh.nodes.node_coord)
-            extracted_triangles = np.sum(region_mesh.elm.elm_type == 2)
-            logger.info(f"Extracted {extracted_nodes} nodes and {extracted_triangles} triangles for {region_name}")
-            
-            # Export STL
-            stl_path = regions_out_dir / f"{region_name}_region.stl"
-            if export_mesh_to_stl(region_mesh, str(stl_path)):
-                success_count += 1
-                logger.info(f"Successfully exported STL: {stl_path}")
-            else:
-                logger.warning(f"Failed to export STL for region: {region_name}")
-            
-            # Export MSH if requested
-            if keep_meshes:
-                msh_path = meshes_out_dir / f"{region_name}_region.msh"
-                try:
-                    region_mesh.write(str(msh_path))
-                    mesh_success_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to save mesh for region {region_name}: {e}")
-        
-        logger.info(f"Converted {success_count}/{len(atlas.keys())} regions to STL")
-        if keep_meshes:
-            logger.info(f"Saved {mesh_success_count}/{len(atlas.keys())} region meshes as MSH")
-
-    if export_whole_gm:
-        whole_stl = Path(output_dir) / "whole_gm.stl"
-        logger.info("Exporting whole GM surface to STL...")
-        if export_mesh_to_stl(mesh, str(whole_stl)):
-            logger.info(f"Successfully wrote whole GM STL: {whole_stl}")
-        else:
-            logger.error("Failed to export whole GM STL")
-    
-    # Export whole GM mesh if requested
-    if keep_meshes and export_whole_gm:
-        whole_msh = Path(output_dir) / "whole_gm.msh"
-        try:
-            mesh.write(str(whole_msh))
-            logger.info(f"Wrote whole GM MSH: {whole_msh}")
-        except Exception as e:
-            logger.warning(f"Failed to save whole GM mesh: {e}")
-
-
-def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
-    """Resolve msh2cortex executable path."""
-    if explicit_path:
-        p = Path(explicit_path)
-        if p.exists():
-            return str(p)
-    # Try PATH
-    exe_name = "msh2cortex.exe" if platform.system().lower().startswith("win") else "msh2cortex"
-    found = shutil.which("msh2cortex") or shutil.which(exe_name)
-    if found:
-        return found
-    # Try locating near simnibs installation
-    try:
-        simnibs_root = Path(simnibs.__file__).resolve().parents[1]
-        candidates = [
-            simnibs_root / "bin" / exe_name,
-            simnibs_root / "bin" / "msh2cortex",
-        ]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-        # Fallback: recursive search (limited depth)
-        for sub in ("bin", "."):
-            for p in (simnibs_root / sub).rglob("msh2cortex*"):
-                if p.is_file():
-                    return str(p)
-    except Exception:
-        pass
-    return None
-
-
-def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central", msh2cortex_path: str | None = None):
-    """Generate cortical surface mesh from tetrahedral GM mesh using msh2cortex."""
-    logger.info(f"Running msh2cortex on tetrahedral GM mesh: {gm_mesh_path}")
-    exe = _resolve_msh2cortex(msh2cortex_path)
-    if not exe:
-        logger.error("msh2cortex command not found. Provide --msh2cortex or ensure it is on PATH in the SimNIBS environment.")
-        return None
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_dir = Path(tmpdir)
-        cmd = [
-            exe,
-            "-i", gm_mesh_path,
-            "-m", str(m2m_dir),
-            "-o", str(out_dir)
-        ]
-        try:
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            logger.error(f"msh2cortex failed: {e.stderr.decode(errors='ignore')}")
-            return None
-
-        # Try to find the requested surface mesh
-        candidates = list(out_dir.glob(f"*_{surface}.msh"))
-        if not candidates:
-            # Fallbacks: try central if requested not found, then any *_central.msh present
-            if surface != "central":
-                candidates = list(out_dir.glob("*_central.msh"))
-        if not candidates:
-            # Last resort: any .msh produced
-            candidates = list(out_dir.glob("*.msh"))
-        if not candidates:
-            logger.error("msh2cortex did not produce a cortical surface .msh")
-            return None
-
-        # Move/copy the selected mesh to a stable temp file we control
-        selected = candidates[0]
-        tmp_copy = Path(tempfile.mkstemp(suffix=f"_{surface}.msh")[1])
-        tmp_copy.write_bytes(selected.read_bytes())
-        logger.info(f"Using cortical surface mesh: {tmp_copy}")
-        return str(tmp_copy)
-
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Export cortical regions and whole GM surface to STL")
-    parser.add_argument("--mesh", help="Input cortical surface mesh (.msh) from msh2cortex")
-    parser.add_argument("--gm-mesh", help="Input tetrahedral GM .msh (volumetric); will run msh2cortex")
-    parser.add_argument("--m2m", required=True, help="Subject m2m directory")
-    parser.add_argument("--output-dir", required=True, help="Output directory for STL files")
-    parser.add_argument("--atlas", default="DK40", help="Atlas name (default: DK40)")
-    parser.add_argument("--surface", default="central", choices=["central", "pial", "white"], help="Cortical surface to extract when using --gm-mesh (default: central)")
-    parser.add_argument("--msh2cortex", help="Path to msh2cortex executable (optional override)")
-    parser.add_argument("--min-triangles", type=int, default=10, help="Minimum number of triangles required for a region (default: 10)")
-    parser.add_argument("--segmentation-method", choices=["connected", "original"], default="connected", help="Segmentation method: connected (recommended) or original (default: connected)")
-    parser.add_argument("--skip-regions", action="store_true", help="Do not export individual region STLs")
-    parser.add_argument("--skip-whole-gm", action="store_true", help="Do not export the whole GM STL")
-    parser.add_argument("--keep-meshes", action="store_true", help="Keep individual cortical region meshes as .msh files")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    return parser.parse_args()
-
 
 def main():
-    """Main entry point."""
-    args = parse_args()
+    """Main function to process all cortical regions and export as STL files."""
+    print("Starting...")
+    parser = argparse.ArgumentParser(description='Convert cortical regions from atlas to STL files')
+    parser.add_argument('--mesh', help='Input cortical surface mesh (.msh) from msh2cortex')
+    parser.add_argument('--gm-mesh', help='Input tetrahedral GM .msh (volumetric); will run msh2cortex')
+    parser.add_argument('--m2m', required=True, help='Subject m2m directory')
+    parser.add_argument('--output-dir', required=True, help='Output directory for STL files')
+    parser.add_argument('--atlas', default='DK40', help='Atlas name (default: DK40)')
+    parser.add_argument('--surface', default='central', choices=['central', 'pial', 'white'], help='Cortical surface to extract when using --gm-mesh (default: central)')
+    parser.add_argument('--msh2cortex', help='Path to msh2cortex executable (optional override)')
+    parser.add_argument('--field', default='TI_max', help='Field name to preserve (default: TI_max)')
+    parser.add_argument('--skip-regions', action='store_true', help='Do not export individual region STLs')
+    parser.add_argument('--skip-whole-gm', action='store_true', help='Do not export the whole GM STL')
+    parser.add_argument('--keep-meshes', action='store_true', help='Keep individual cortical region meshes as .msh files')
     
-    # Set up logging level
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+    args = parser.parse_args()
     
+    # Determine mesh path
     mesh_path = args.mesh
-    m2m_dir = args.m2m
-    output_dir = args.output_dir
-    atlas_name = args.atlas
-    surface = args.surface
-    export_regions = not args.skip_regions
-    export_whole_gm = not args.skip_whole_gm
-    keep_meshes = args.keep_meshes
-
-    if not mesh_path and not args.gm_mesh:
-        logger.error("Must provide either --mesh (cortical surface) or --gm-mesh (tetrahedral GM)")
-        return 1
     if args.gm_mesh:
         if not os.path.exists(args.gm_mesh):
-            logger.error(f"GM mesh file not found: {args.gm_mesh}")
-            return 1
-        generated_surface = generate_cortical_surface_from_tetra(args.gm_mesh, m2m_dir, surface, args.msh2cortex)
-        if not generated_surface:
-            return 1
-        mesh_path = generated_surface
+            sys.exit(1)
+        # Generate surface mesh from tetrahedral mesh
+        mesh_path = generate_surface_mesh(args.gm_mesh, args.m2m)
+        if not mesh_path:
+            sys.exit(1)
+    
+    if not mesh_path:
+        sys.exit(1)
+    
     if not os.path.exists(mesh_path):
-        logger.error(f"Mesh file not found: {mesh_path}")
-        return 1
-    if not os.path.isdir(m2m_dir):
-        logger.error(f"m2m directory not found: {m2m_dir}")
-        return 1
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    run_conversion(mesh_path, m2m_dir, output_dir, atlas_name,
-                   export_regions, export_whole_gm, keep_meshes, args.min_triangles, args.segmentation_method)
-    print("Conversion complete.")
-    return 0
-
+        sys.exit(1)
+    
+    if not os.path.exists(args.m2m):
+        sys.exit(1)
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Create temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            # Load the surface mesh
+            surface_mesh = simnibs.read_msh(mesh_path)
+            
+            # Check if field exists
+            if args.field not in surface_mesh.field:
+                sys.exit(1)
+            
+            # Load the atlas
+            atlas = simnibs.subject_atlas(args.atlas, args.m2m)
+            
+            # Process each region
+            if not args.skip_regions:
+                print("Converting...")
+                converted_count = 0
+                for region_name in atlas.keys():
+                    if process_region_to_stl(
+                        surface_mesh, atlas, region_name, args.field, 
+                        args.output_dir, args.atlas, temp_dir
+                    ):
+                        converted_count += 1
+                print(f"Converted {converted_count} cortical regions.")
+            
+            # Export whole GM if requested
+            if not args.skip_whole_gm:
+                # TODO: Implement whole GM export for STL
+                pass
+            
+        except Exception as e:
+            sys.exit(1)
+    
+    print(f"Output: {os.path.join(args.output_dir, 'cortical_stls')}")
+    print("Finishing...")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

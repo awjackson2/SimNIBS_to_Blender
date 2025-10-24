@@ -1,13 +1,13 @@
-# SimNIBS Cortical Mesh → STL (Regions + Whole GM)
+# SimNIBS Cortical Mesh → STL (Atlas Regions)
 
-This repository provides a single tool to export subject‑specific cortical regions and the whole gray‑matter (GM) surface from SimNIBS `.msh` files to binary STL format for Blender (or other 3D software). It uses the subject's atlas from the `m2m_*` directory to ensure region accuracy (default atlas: `DK40`).
+This repository provides a single tool to export subject‑specific cortical regions from SimNIBS `.msh` files to binary STL format for Blender (or other 3D software). It uses the subject's atlas from the `m2m_*` directory to ensure region accuracy.
 
 ## Overview
 
-The single script `scripts/cortical_regions_to_stl.py`:
-- **Exports individual cortical regions to binary STL** using the chosen atlas (default `DK40`)
-- **Exports the whole GM surface to binary STL**
-- **Supports cortical surface generation** from tetrahedral GM meshes using `msh2cortex`
+The single script `cortical_regions_to_stl.py`:
+- **Exports individual cortical regions to binary STL** using the specified atlas
+- **Supports cortical surface generation** from field meshes using `msh2cortex`
+- **Preserves field values** in ROI regions while setting non-ROI values to zero
 - **Note**: STL format does not support vertex colors or field data - only geometry is exported
 
 ## Requirements
@@ -18,27 +18,29 @@ The single script `scripts/cortical_regions_to_stl.py`:
 - **NumPy**
 
 ### Input Requirements
-- EITHER a cortical surface mesh (`.msh`) produced by `msh2cortex` OR a tetrahedral GM `.msh` (the tool can run `msh2cortex` for you)
+- Field mesh (`.msh`) containing the field data to preserve in ROI regions
 - Subject's `m2m_*` directory (for the subject atlas)
-- Supported atlases: `DK40` (default), `DKTatlas40`, `HCP_MMP1`, `aparc.a2009s`
+- Supported atlases: `DK40`, `DKTatlas40`, `HCP_MMP1`, `aparc.a2009s`
 
 ## Usage
 
 ### Basic Usage
 
-Export atlas‑accurate region STLs and the whole GM STL (default atlas: `DK40`):
+Export atlas‑accurate region STLs with preserved field values:
 
 ```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
-  --output-dir out
+simnibs_python cortical_regions_to_stl.py \
+  --mesh /path/to/surface.msh \
+  --m2m /path/to/m2m_001 \
+  --atlas DK40 \
+  --field TI_max \
+  --output-dir /path/to/output
 ```
 
 ### Command Line Options
 
 ```bash
-simnibs_python scripts/cortical_regions_to_stl.py [OPTIONS]
+simnibs_python cortical_regions_to_stl.py [OPTIONS]
 
 Required (one of):
   --mesh           Cortical surface .msh (from msh2cortex)
@@ -50,77 +52,43 @@ Optional:
   --atlas          Atlas name (default: DK40)
   --surface        Surface when using --gm-mesh: central|pial|white (default: central)
   --msh2cortex     Path to msh2cortex executable (if not on PATH)
-  --min-triangles  Minimum number of triangles required for a region (default: 10)
-  --segmentation-method  Segmentation method: connected (recommended) or original (default: connected)
+  --field          Field name to preserve (default: TI_max)
   --skip-regions   Do not export individual region STLs
   --skip-whole-gm  Do not export the whole GM STL
   --keep-meshes    Keep individual cortical region meshes as .msh files
-  --debug          Enable debug logging for troubleshooting
 ```
 
 ### Examples
 
-1) Regions + whole GM with default atlas (surface mesh input):
+1) Export DK40 atlas regions with TI_max field (surface mesh input):
 ```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
+simnibs_python cortical_regions_to_stl.py \
+  --mesh data/B/TI/mesh/B_TI_central.msh \
+  --m2m data/m2m/m2m_001 \
+  --atlas DK40 \
+  --field TI_max \
   --output-dir out
 ```
 
 2) Start from tetrahedral GM mesh (auto-runs msh2cortex):
 ```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --gm-mesh m2m_subject/subject.msh \
+simnibs_python cortical_regions_to_stl.py \
+  --gm-mesh data/A/TI/mesh/A_TI.msh \
   --surface central \
-  --m2m m2m_subject \
+  --m2m data/m2m/m2m_001 \
+  --atlas HCP_MMP1 \
+  --field normE \
   --output-dir out
 ```
 
-3) Custom atlas and keep original meshes:
+3) Export DKTatlas40 regions with different field:
 ```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
+simnibs_python cortical_regions_to_stl.py \
+  --mesh simulation/mesh/field_central.msh \
   --m2m m2m_subject \
-  --atlas HCP_MMP1 \
-  --output-dir out \
-  --keep-meshes
-```
-
-4) Export only whole GM (skip individual regions):
-```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
-  --output-dir out \
-  --skip-regions
-```
-
-5) Filter out small fragmented regions:
-```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
-  --output-dir out \
-  --min-triangles 50
-```
-
-6) Debug mode for troubleshooting:
-```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
-  --output-dir out \
-  --debug
-```
-
-7) Use original segmentation method (if connected method fails):
-```bash
-simnibs_python scripts/cortical_regions_to_stl.py \
-  --mesh subject_overlays/subject_central.msh \
-  --m2m m2m_subject \
-  --output-dir out \
-  --segmentation-method original
+  --atlas DKTatlas40 \
+  --field magnitude \
+  --output-dir results
 ```
 
 ## Supported Atlases
@@ -142,9 +110,8 @@ simnibs_python scripts/cortical_regions_to_stl.py \
 
 ## Output Files
 
-- **Region STLs**: `<region_name>_region.stl` for each atlas region
-- **Whole GM STL**: `whole_gm.stl`
-- **Optional MSH files**: `<region_name>_region.msh` and `whole_gm.msh` (if `--keep-meshes`)
+- **Region STLs**: `<region_name>.stl` for each atlas region
+- **Output structure**: `{output_dir}/{atlas_type}/{region_name}.stl`
 
 ## STL Format Notes
 
@@ -155,64 +122,36 @@ simnibs_python scripts/cortical_regions_to_stl.py \
 
 ## Usage Tips
 
-- **Use `--keep-meshes`** to preserve original `.msh` files alongside STL exports
-- **Skip regions or whole GM** with `--skip-regions` or `--skip-whole-gm` for faster processing
 - **Binary STL files** are much smaller than ASCII STL and load faster in 3D software
 - **For field data visualization**, use `cortical_regions_to_ply.py` instead, which supports vertex colors
-- **Filter fragmented regions** with `--min-triangles` to exclude small, disconnected mesh fragments
 - **Quality validation** automatically removes degenerate triangles and validates mesh connectivity
+- **Surface mesh generation** is automatic - the script runs `msh2cortex` if needed
 
-## Segmentation Methods
+## Processing Method
 
-### Connected Component Method (Default)
+The script uses a simple but effective approach:
 
-The **connected component method** is the recommended approach that solves fragmentation issues:
-
-1. **Strict Triangle Inclusion**: Only includes triangles where ALL 3 vertices are in the region
-2. **Connected Component Analysis**: Uses graph theory to find the largest connected component
-3. **Clean Boundaries**: Eliminates scattered faces and ensures proper region boundaries
-4. **Automatic Fallback**: Falls back to original method if connected analysis fails
-
-### Original Method
-
-The **original method** uses the same approach as the PLY script:
-
-1. **Node-based Cropping**: Uses SimNIBS's built-in `crop_mesh(nodes=nodes_to_keep)`
-2. **Element Filtering**: Fallback to triangle filtering with ≥2 vertices in region
-3. **May Produce Fragmentation**: Can result in scattered faces across region boundaries
+1. **ROI Mask Creation**: Uses atlas to create boolean mask for each region
+2. **Field Value Preservation**: Preserves original field values in ROI, sets others to zero
+3. **Triangle Extraction**: Extracts triangles where at least 2 out of 3 vertices have non-zero field values
+4. **STL Generation**: Creates binary STL files with proper surface normals
 
 ## Troubleshooting
 
-### Fragmentation Issues
-
-If you experience fragmented STL files with faces from all over the cortex:
-
-1. **Use the connected method** (default) - this should solve most fragmentation issues
-2. **Use `--debug`** to see detailed extraction information
-3. **Check the whole GM export first** - if this is also fragmented, the issue is with the input mesh
-4. **Use `--min-triangles`** to filter out regions with too few valid triangles
-5. **Try `--segmentation-method original`** if the connected method fails
-
-### Debugging Steps
-
-1. **Test whole GM export first**:
-   ```bash
-   simnibs_python scripts/cortical_regions_to_stl.py \
-     --mesh your_mesh.msh \
-     --m2m your_m2m_dir \
-     --output-dir out \
-     --skip-regions \
-     --debug
-   ```
-
-2. **Check mesh statistics** in the debug output - verify you have triangular elements
-
-3. **Test with a single region** by using `--min-triangles 0` to see all regions
-
-4. **Verify atlas alignment** - the atlas nodes should correspond to your mesh nodes
-
 ### Common Issues
 
-- **Mixed element types**: Ensure your mesh contains triangular surface elements (elm_type == 2)
+- **Field not found**: Ensure the specified field name exists in your mesh file
 - **Atlas mismatch**: The atlas must be generated for the same subject as your mesh
-- **Surface mesh required**: Use `msh2cortex` to generate proper cortical surface meshes from tetrahedral meshes
+- **Empty regions**: Some atlas regions may have no nodes or no positive field values
+- **msh2cortex errors**: Ensure `msh2cortex` is available in your PATH
+
+### Verification Steps
+
+1. **Check field availability**:
+   ```bash
+   simnibs_python -c "import simnibs; mesh = simnibs.read_msh('your_mesh.msh'); print(list(mesh.field.keys()))"
+   ```
+
+2. **Verify atlas alignment** - the atlas nodes should correspond to your mesh nodes
+
+3. **Check output directory** - ensure you have write permissions to the output directory

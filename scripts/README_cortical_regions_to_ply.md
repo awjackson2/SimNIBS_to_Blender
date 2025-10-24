@@ -1,14 +1,15 @@
 # SimNIBS Cortical Mesh → PLY (Regions + Whole GM)
 
-This repository provides a single tool to export subject‑specific cortical regions and the whole gray‑matter (GM) surface from SimNIBS `.msh` files to PLY for Blender (or other tools). It uses the subject’s atlas from the `m2m_*` directory to ensure region accuracy (default atlas: `DK40`).
+This repository provides a single tool to export subject‑specific cortical regions and the whole gray‑matter (GM) surface from SimNIBS `.msh` files to PLY for Blender (or other tools). It uses the subject's atlas from the `m2m_*` directory to ensure region accuracy (default atlas: `DK40`).
 
 ## Overview
 
-The single script `scripts/cortical_regions_to_ply.py`:
+The single script `cortical_regions_to_ply.py`:
 - **Exports individual cortical regions to PLY** using the chosen atlas (default `DK40`)
 - **Exports the whole GM surface to PLY**
 - **Optionally samples a NIfTI field onto mesh nodes** and maps it to vertex colors or stores as scalars
 - **Supports global colormap normalization** from a NIfTI file so colors are comparable across regions/meshes
+- **Uses consistent ROI extraction** with preserved field values for accurate visualization
 
 ## Requirements
 
@@ -33,7 +34,7 @@ The single script `scripts/cortical_regions_to_ply.py`:
 Export atlas‑accurate region PLYs and the whole GM PLY (default atlas: `DK40`):
 
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py \
+simnibs_python cortical_regions_to_ply.py \
   --mesh subject_overlays/subject_central.msh \
   --m2m m2m_subject \
   --output-dir out \
@@ -43,7 +44,7 @@ simnibs_python scripts/cortical_regions_to_ply.py \
 ### Command Line Options
 
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py [OPTIONS]
+simnibs_python cortical_regions_to_ply.py [OPTIONS]
 
 Required (one of):
   --mesh           Cortical surface .msh (from msh2cortex)
@@ -69,7 +70,7 @@ Optional:
 
 1) Regions + whole GM with default atlas and NIfTI colors (surface mesh input):
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py \
+simnibs_python cortical_regions_to_ply.py \
   --mesh subject_overlays/subject_central.msh \
   --m2m m2m_subject \
   --output-dir out \
@@ -78,7 +79,7 @@ simnibs_python scripts/cortical_regions_to_ply.py \
 
 2) Start from tetrahedral GM mesh (auto-runs msh2cortex):
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py \
+simnibs_python cortical_regions_to_ply.py \
   --gm-mesh m2m_subject/subject.msh \
   --surface central \
   --m2m m2m_subject \
@@ -87,7 +88,7 @@ simnibs_python scripts/cortical_regions_to_ply.py \
 
 3) Without field data (gray colors) and custom atlas:
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py \
+simnibs_python cortical_regions_to_ply.py \
   --mesh subject_overlays/subject_central.msh \
   --m2m m2m_subject \
   --atlas HCP_MMP1 \
@@ -96,7 +97,7 @@ simnibs_python scripts/cortical_regions_to_ply.py \
 
 4) Global color normalization from NIfTI (comparable colors across regions):
 ```bash
-simnibs_python scripts/cortical_regions_to_ply.py \
+simnibs_python cortical_regions_to_ply.py \
   --mesh subject_overlays/subject_central.msh \
   --m2m m2m_subject \
   --output-dir out \
@@ -127,11 +128,22 @@ simnibs_python scripts/cortical_regions_to_ply.py \
 - **Region PLYs**: `<region_name>_region.ply` for each atlas region
 - **Whole GM PLY**: `whole_gm.ply`
 
+## Processing Method
+
+The script uses a consistent ROI extraction approach:
+
+1. **ROI Mask Creation**: Uses atlas to create boolean mask for each region
+2. **Field Value Preservation**: Preserves original field values in ROI, sets others to zero
+3. **Triangle Extraction**: Extracts triangles where at least 2 out of 3 vertices have non-zero field values
+4. **Global Color Scaling**: Uses consistent field range across all regions for comparable visualization
+5. **PLY Generation**: Creates PLY files with proper field data mapping
+
 ## Usage Tips
 
 - **Use `--global-from-nifti`** for consistent color scaling across regions
 - **Specify `--field-range`** for explicit color mapping ranges
 - **Use `--scalars`** to store field data as scalars instead of vertex colors
 - **Skip regions or whole GM** with `--skip-regions` or `--skip-whole-gm` for faster processing
+- **Consistent visualization**: All regions use the same color scale, so combined regions look identical to whole GM
 
 

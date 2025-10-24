@@ -34,7 +34,6 @@ Examples:
 import argparse
 import os
 import sys
-import logging
 from pathlib import Path
 import numpy as np
 import tempfile
@@ -58,9 +57,7 @@ except ImportError:
     sys.exit(1)
 
 
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Logging removed for consistency with STL script
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +137,7 @@ def field_to_colormap(field_values, colormap='viridis', vmin=None, vmax=None):
     try:
         import matplotlib.cm as cm
     except ImportError:
-        logger.warning("Matplotlib not available, using simple blue-red colormap")
+        # Matplotlib not available, using simple blue-red colormap
         return simple_colormap(field_values, vmin, vmax)
     if vmin is None:
         vmin = np.nanmin(field_values)
@@ -187,10 +184,9 @@ def calculate_global_field_range(field_file_path, mesh_file_path=None):
                             if mesh_max < global_max:
                                 global_max = mesh_max
             except Exception as e:
-                logger.warning(f"Could not read field data from mesh: {e}")
+                pass
         return global_min, global_max
     except Exception as e:
-        logger.error(f"Failed to calculate global field range: {e}")
         return None, None
 
 
@@ -220,7 +216,6 @@ def apply_field_from_nifti(mesh, nifti_path, field_name="TI_max"):
         mesh.add_node_field(nodedata, field_name)
         return mesh
     except Exception as e:
-        logger.error(f"Failed to apply field from NIfTI: {e}")
         return mesh
 
 
@@ -228,31 +223,93 @@ def apply_field_from_nifti(mesh, nifti_path, field_name="TI_max"):
 # Mesh/Atlas Utilities
 # ──────────────────────────────────────────────────────────────────────────────
 
-def extract_region_mesh(mesh, region_mask):
-    """Extract mesh region based on node mask."""
-    try:
-        nodes_to_keep = np.where(region_mask)[0]
-        if nodes_to_keep.size == 0:
-            return None
-        region_mesh = mesh.crop_mesh(nodes=nodes_to_keep)
-        return region_mesh
-    except Exception:
-        try:
-            triangular_elements = mesh.elm.elm_type == 2
-            triangle_indices = np.where(triangular_elements)[0]
-            triangle_nodes = mesh.elm.node_number_list[triangular_elements] - 1
-            region_node_set = set(np.where(region_mask)[0].tolist())
-            triangles_in_region = []
-            for i, tri in enumerate(triangle_nodes):
-                if sum((v in region_node_set) for v in tri[:3]) >= 2:
-                    triangles_in_region.append(triangle_indices[i])
-            if len(triangles_in_region) == 0:
-                return None
-            elements_to_keep = np.array(triangles_in_region)
-            region_mesh = mesh.crop_mesh(elements=elements_to_keep)
-            return region_mesh
-        except Exception:
-            return None
+def create_roi_mesh(surface_mesh, roi_mask, field_values, field_name, region_name, temp_dir):
+    """
+    Create a ROI mesh with preserved field values for the specified region.
+    
+    Args:
+        surface_mesh: The surface mesh object
+        roi_mask: Boolean mask for the ROI
+        field_values: Original field values
+        field_name: Name of the field
+        region_name: Name of the region
+        temp_dir: Temporary directory for intermediate files
+        
+    Returns:
+        str: Path to the temporary ROI mesh file
+    """
+    # Create new field values array initialized to zeros
+    roi_field_values = np.zeros_like(field_values)
+    
+    # Preserve original field values only for ROI nodes
+    roi_field_values[roi_mask] = field_values[roi_mask]
+    
+    # Create a new mesh by reading the original mesh file and modifying it
+    # This avoids the copy() method issues
+    temp_mesh_path = os.path.join(temp_dir, f"{region_name}_roi.msh")
+    
+    # Write the original mesh to temp file first
+    surface_mesh.write(temp_mesh_path)
+    
+    # Read it back and modify the field
+    roi_mesh = read_msh(temp_mesh_path)
+    
+    # Replace the field with our ROI version
+    roi_mesh.field[field_name].value = roi_field_values
+    
+    # Write the modified mesh
+    roi_mesh.write(temp_mesh_path)
+    
+    return temp_mesh_path
+
+
+def extract_roi_region_no_zeros(mesh, roi_values, min_triangles=10):
+    """Extract ROI region by removing only zero values (no threshold)."""
+    
+    # Find nodes with non-zero values
+    roi_nodes = np.where(roi_values > 0)[0]
+    roi_node_set = set(roi_nodes)
+    
+    if len(roi_nodes) == 0:
+        return None, None, None
+    
+    # Get triangular elements
+    triangular_elements = mesh.elm.elm_type == 2
+    triangle_indices = np.where(triangular_elements)[0]
+    triangle_nodes = mesh.elm.node_number_list[triangular_elements] - 1  # Convert to 0-based
+    
+    # Find triangles where at least 2 out of 3 vertices are in the ROI
+    triangles_in_roi = []
+    for i, triangle in enumerate(triangle_nodes):
+        vertices_in_roi = sum(1 for node_idx in triangle if node_idx in roi_node_set)
+        if vertices_in_roi >= 2:  # At least 2 out of 3 vertices in ROI
+            triangles_in_roi.append(i)
+    
+    if len(triangles_in_roi) < min_triangles:
+        return None, None, None
+    
+    # Get the triangles that are in the ROI
+    roi_triangles = triangle_nodes[triangles_in_roi]
+    
+    # Get unique vertices used in these triangles
+    unique_vertices = np.unique(roi_triangles.flatten())
+    
+    # Create vertex mapping (old index -> new index)
+    vertex_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(unique_vertices)}
+    
+    # Remap triangle indices to new vertex indices
+    remapped_triangles = np.array([
+        [vertex_mapping[face[0]], vertex_mapping[face[1]], vertex_mapping[face[2]]] 
+        for face in roi_triangles
+    ])
+    
+    # Extract vertex coordinates
+    vertices = mesh.nodes.node_coord[unique_vertices]
+    
+    # Extract field values for the unique vertices
+    vertex_field_values = roi_values[unique_vertices]
+    
+    return vertices, remapped_triangles, vertex_field_values
 
 
 def mesh_vertices_faces_and_field(mesh, field_name="TI_max"):
@@ -287,11 +344,24 @@ def mesh_vertices_faces_and_field(mesh, field_name="TI_max"):
 # Main Orchestration
 # ──────────────────────────────────────────────────────────────────────────────
 
+def create_ply_from_vertices_faces(vertices, faces, vertex_field_values, ply_path, field_name, use_colors, colormap, field_range):
+    """Create PLY file from vertices, faces, and field values."""
+    if vertices is None or faces is None:
+        return False
+    
+    vmin, vmax = field_range if field_range else (None, None)
+    if use_colors:
+        colors = field_to_colormap(vertex_field_values, colormap, vmin, vmax)
+        write_ply_with_colors(vertices, faces, colors, ply_path, field_name)
+    else:
+        write_ply_with_scalars(vertices, faces, vertex_field_values, ply_path, field_name)
+    return True
+
+
 def export_mesh_to_ply(mesh, ply_path, field_name, use_colors, colormap, field_range):
     """Export mesh to PLY format with optional field coloring."""
     vertices, faces, field_data = mesh_vertices_faces_and_field(mesh, field_name)
     if vertices is None or faces is None:
-        logger.error("Mesh has no triangular elements to export")
         return False
     if field_data is None:
         if use_colors:
@@ -314,12 +384,12 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
                    use_colors, colormap, field_range, global_from_nifti,
                    export_regions, export_whole_gm, keep_meshes):
     """Main conversion workflow."""
+    converted_count = 0
     mesh = read_msh(mesh_path)
-    logger.info(f"Loaded mesh: {mesh_path}")
     atlas = subject_atlas(atlas_name, str(m2m_dir))
-    logger.info(f"Loaded atlas '{atlas_name}' with {len(atlas.keys())} regions")
 
-    regions_out_dir = Path(output_dir) / "regions"
+    cortical_plys_dir = Path(output_dir) / "cortical_plys"
+    regions_out_dir = cortical_plys_dir / "regions"
     regions_out_dir.mkdir(parents=True, exist_ok=True)
     
     # Create meshes directory if keeping meshes
@@ -328,7 +398,6 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
         meshes_out_dir.mkdir(parents=True, exist_ok=True)
 
     if field_file:
-        logger.info(f"Sampling field from NIfTI for whole mesh and regions: {field_file}")
         mesh = apply_field_from_nifti(mesh, field_file, field_name)
 
     effective_field_range = None
@@ -336,54 +405,95 @@ def run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field
         effective_field_range = tuple(field_range)
     elif global_from_nifti:
         vmin, vmax = calculate_global_field_range(global_from_nifti, mesh_path)
-        if vmin is None or vmax is None:
-            logger.error("Failed to compute global field range from NIfTI")
-        else:
+        if vmin is not None and vmax is not None:
             effective_field_range = (vmin, vmax)
-            logger.info(f"Using global colormap range: [{vmin:.6f}, {vmax:.6f}]")
 
     if export_regions:
         success_count = 0
         mesh_success_count = 0
-        for region_name, region_mask in atlas.items():
-            region_mesh = extract_region_mesh(mesh, region_mask)
-            if region_mesh is None:
-                logger.warning(f"Skipping region with no mesh: {region_name}")
-                continue
-            if field_file and (field_name not in [nd.field_name for nd in getattr(region_mesh, 'nodedata', []) if hasattr(nd, 'field_name')]):
-                region_mesh = apply_field_from_nifti(region_mesh, field_file, field_name)
-            
-            # Export PLY
-            ply_path = regions_out_dir / f"{region_name}_region.ply"
-            if export_mesh_to_ply(region_mesh, str(ply_path), field_name, use_colors, colormap, effective_field_range):
-                success_count += 1
-            
-            # Export MSH if requested
-            if keep_meshes:
-                msh_path = meshes_out_dir / f"{region_name}_region.msh"
-                try:
-                    region_mesh.write(str(msh_path))
-                    mesh_success_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to save mesh for region {region_name}: {e}")
         
-        logger.info(f"Converted {success_count}/{len(atlas.keys())} regions to PLY")
-        if keep_meshes:
-            logger.info(f"Saved {mesh_success_count}/{len(atlas.keys())} region meshes as MSH")
+        # Calculate global field range from the whole mesh if not already set
+        if effective_field_range is None:
+            field_values = mesh.field[field_name].value
+            positive_values = field_values[field_values > 0]
+            if len(positive_values) > 0:
+                global_min = float(np.min(positive_values))
+                global_max = float(np.max(positive_values))
+                effective_field_range = (global_min, global_max)
+            else:
+                effective_field_range = (0.0, 1.0)
+        
+        # Create temporary directory for ROI meshes
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for region_name, region_mask in atlas.items():
+                try:
+                    # Check if we have any nodes in the ROI
+                    roi_nodes_count = np.sum(region_mask)
+                    if roi_nodes_count == 0:
+                        continue
+                    
+                    # Get the field values within the ROI
+                    field_values = mesh.field[field_name].value
+                    field_values_in_roi = field_values[region_mask]
+                    
+                    # Filter for positive values in ROI
+                    positive_mask = field_values_in_roi > 0
+                    field_values_positive = field_values_in_roi[positive_mask]
+                    
+                    # Check if we have any positive values in the ROI
+                    positive_count = len(field_values_positive)
+                    if positive_count == 0:
+                        continue
+                    
+                    # Create ROI mesh
+                    temp_mesh_path = create_roi_mesh(mesh, region_mask, field_values, field_name, region_name, temp_dir)
+                    
+                    # Load the ROI mesh for PLY conversion
+                    roi_mesh = read_msh(temp_mesh_path)
+                    
+                    # Get the ROI field values for extraction
+                    roi_field_values = roi_mesh.field[field_name].value
+                    
+                    # Extract ROI region (remove zero values)
+                    vertices, faces, vertex_field_values = extract_roi_region_no_zeros(roi_mesh, roi_field_values)
+                    
+                    if vertices is None or faces is None:
+                        continue
+                    
+                    # Create PLY with field data using global field range
+                    ply_path = regions_out_dir / f"{region_name}_region.ply"
+                    if create_ply_from_vertices_faces(vertices, faces, vertex_field_values, str(ply_path), field_name, use_colors, colormap, effective_field_range):
+                        success_count += 1
+                        converted_count += 1
+                    
+                    # Export MSH if requested
+                    if keep_meshes:
+                        msh_path = meshes_out_dir / f"{region_name}_region.msh"
+                        try:
+                            roi_mesh.write(str(msh_path))
+                            mesh_success_count += 1
+                        except Exception as e:
+                            pass
+                    
+                    # Clean up temporary mesh file
+                    os.remove(temp_mesh_path)
+                    
+                except Exception as e:
+                    continue
 
     if export_whole_gm:
-        whole_ply = Path(output_dir) / "whole_gm.ply"
+        whole_ply = cortical_plys_dir / "whole_gm.ply"
         export_mesh_to_ply(mesh, str(whole_ply), field_name, use_colors, colormap, effective_field_range)
-        logger.info(f"Wrote whole GM PLY: {whole_ply}")
     
     # Export whole GM mesh if requested
     if keep_meshes and export_whole_gm:
         whole_msh = Path(output_dir) / "whole_gm.msh"
         try:
             mesh.write(str(whole_msh))
-            logger.info(f"Wrote whole GM MSH: {whole_msh}")
         except Exception as e:
-            logger.warning(f"Failed to save whole GM mesh: {e}")
+            pass
+    
+    return converted_count
 
 
 def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
@@ -419,10 +529,8 @@ def _resolve_msh2cortex(explicit_path: str | None) -> str | None:
 
 def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central", msh2cortex_path: str | None = None):
     """Generate cortical surface mesh from tetrahedral GM mesh using msh2cortex."""
-    logger.info(f"Running msh2cortex on tetrahedral GM mesh: {gm_mesh_path}")
     exe = _resolve_msh2cortex(msh2cortex_path)
     if not exe:
-        logger.error("msh2cortex command not found. Provide --msh2cortex or ensure it is on PATH in the SimNIBS environment.")
         return None
     with tempfile.TemporaryDirectory() as tmpdir:
         out_dir = Path(tmpdir)
@@ -435,7 +543,6 @@ def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
-            logger.error(f"msh2cortex failed: {e.stderr.decode(errors='ignore')}")
             return None
 
         # Try to find the requested surface mesh
@@ -448,14 +555,12 @@ def generate_cortical_surface_from_tetra(gm_mesh_path, m2m_dir, surface="central
             # Last resort: any .msh produced
             candidates = list(out_dir.glob("*.msh"))
         if not candidates:
-            logger.error("msh2cortex did not produce a cortical surface .msh")
             return None
 
         # Move/copy the selected mesh to a stable temp file we control
         selected = candidates[0]
         tmp_copy = Path(tempfile.mkstemp(suffix=f"_{surface}.msh")[1])
         tmp_copy.write_bytes(selected.read_bytes())
-        logger.info(f"Using cortical surface mesh: {tmp_copy}")
         return str(tmp_copy)
 
 
@@ -483,6 +588,7 @@ def parse_args():
 
 def main():
     """Main entry point."""
+    print("Starting...")
     args = parse_args()
     mesh_path = args.mesh
     m2m_dir = args.m2m
@@ -500,28 +606,27 @@ def main():
     keep_meshes = args.keep_meshes
 
     if not mesh_path and not args.gm_mesh:
-        logger.error("Must provide either --mesh (cortical surface) or --gm-mesh (tetrahedral GM)")
         return 1
     if args.gm_mesh:
         if not os.path.exists(args.gm_mesh):
-            logger.error(f"GM mesh file not found: {args.gm_mesh}")
             return 1
         generated_surface = generate_cortical_surface_from_tetra(args.gm_mesh, m2m_dir, surface, args.msh2cortex)
         if not generated_surface:
             return 1
         mesh_path = generated_surface
     if not os.path.exists(mesh_path):
-        logger.error(f"Mesh file not found: {mesh_path}")
         return 1
     if not os.path.isdir(m2m_dir):
-        logger.error(f"m2m directory not found: {m2m_dir}")
         return 1
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field_name,
+    print("Converting...")
+    converted_count = run_conversion(mesh_path, m2m_dir, output_dir, atlas_name, field_file, field_name,
                    use_colors, colormap, field_range, global_from_nifti,
                    export_regions, export_whole_gm, keep_meshes)
-    print("Conversion complete.")
+    print(f"Converted {converted_count} cortical regions.")
+    print(f"Output: {os.path.join(output_dir, 'cortical_plys')}")
+    print("Finishing...")
     return 0
 
 
