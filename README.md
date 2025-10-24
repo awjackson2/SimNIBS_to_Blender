@@ -7,6 +7,9 @@ Tools for exporting SimNIBS mesh data to PLY format for visualization in Blender
 ### `scripts/cortical_regions_to_ply.py`
 Export atlas-accurate cortical regions and whole gray matter surface from SimNIBS `.msh` files to PLY format.
 
+### `scripts/cortical_regions_to_stl.py`
+Export atlas-accurate cortical regions and whole gray matter surface from SimNIBS `.msh` files to binary STL format for Blender.
+
 ### `scripts/vector_ply.py`
 Export TDCS simulation E-field vectors as arrow PLY files for visualization of CH1, CH2, TI/mTI patterns.
 
@@ -15,6 +18,12 @@ Export TDCS simulation E-field vectors as arrow PLY files for visualization of C
 ```bash
 # Export cortical regions
 simnibs_python scripts/cortical_regions_to_ply.py \
+  --mesh subject_central.msh \
+  --m2m m2m_subject \
+  --output-dir out
+
+# Export cortical regions to STL
+simnibs_python scripts/cortical_regions_to_stl.py \
   --mesh subject_central.msh \
   --m2m m2m_subject \
   --output-dir out
