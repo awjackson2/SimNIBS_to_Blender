@@ -1,6 +1,9 @@
 # SimNIBS Mesh Region Extractor
 
 Tools for exporting SimNIBS mesh data to PLY and STL formats for visualization in Blender and other 3D software. Provides atlas-accurate cortical region extraction with preserved field data and consistent visualization.
+<img width="1270" height="644" alt="gmsh-ss" src="https://github.com/user-attachments/assets/7ebf77d9-76ca-4ed9-af74-57b5ca2300e2" />
+<img width="1050" height="575" alt="blender-nonrender" src="https://github.com/user-attachments/assets/1e387f22-51b7-49d9-9b57-8801c66e1c35" />
+<img width="1920" height="1080" alt="blender-render" src="https://github.com/user-attachments/assets/407a9bea-5d1f-4b32-a06b-b412ddb2da53" />
 
 ## Scripts
 
