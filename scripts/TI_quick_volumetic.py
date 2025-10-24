@@ -22,7 +22,7 @@ Date: 2024
 #=============================================================================
 
 # Default simulation settings
-DEFAULT_BASE_DIR = "C:/Users/Aksel/Documents/02_Work/01_Projects/12_projectdir/projectdir/derivatives/SimNIBS/sub-ernie/Simulations/sphere_normal/high_Frequency/mesh"
+DEFAULT_BASE_DIR = ""
 DEFAULT_OUTPUT_DIR = "../output/"
 DEFAULT_SURFACE_ID = 1002  # Grey matter surface ID for normal calculation
 
